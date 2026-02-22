@@ -1,0 +1,18 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# s3proxy data (bind-mounted from docker-compose.s3proxy.yml)
+tmp/
+*.pem
+.metals/
+spark-connect-jwt-auth/target/
+target/
+.vscode/

@@ -1,0 +1,359 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>com.yourco</groupId>
+  <artifactId>spark-connect-jwt-auth</artifactId>
+  <version>1.0.0-SNAPSHOT</version>
+  <packaging>jar</packaging>
+
+  <!--
+    Default properties (active when no profile is specified).
+    Both profiles override these entirely, so these act as documentation
+    of the shape of each property rather than a true default.
+  -->
+  <properties>
+    <scala.version>2.13.16</scala.version>
+    <scala.binary.version>2.13</scala.binary.version>
+    <spark.version>4.0.1</spark.version>
+    <spark.compat.version>spark-4</spark.compat.version>
+    <jackson.version>2.18.2</jackson.version>
+    <maven.compiler.source>11</maven.compiler.source>
+    <maven.compiler.target>11</maven.compiler.target>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+  </properties>
+
+  <!-- ======================================================================
+       Shared dependencies (Scala runtime + test framework).
+       Version-specific Spark/gRPC deps live inside each profile below.
+       ====================================================================== -->
+  <dependencies>
+    <dependency>
+      <groupId>org.scala-lang</groupId>
+      <artifactId>scala-library</artifactId>
+      <version>${scala.version}</version>
+      <scope>provided</scope>
+    </dependency>
+
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+      <version>${jackson.version}</version>
+      <scope>provided</scope>
+    </dependency>
+
+    <dependency>
+      <groupId>org.scalatest</groupId>
+      <artifactId>scalatest_${scala.binary.version}</artifactId>
+      <version>3.2.19</version>
+      <scope>test</scope>
+    </dependency>
+
+    <!--
+      Caffeine — time-bounded credential cache in JwtAWSCredentialsProvider.
+      Compile scope so it is shaded into the plugin JAR; the shade plugin
+      relocates it to avoid future classpath conflicts with Spark internals.
+    -->
+    <dependency>
+      <groupId>com.github.ben-manes.caffeine</groupId>
+      <artifactId>caffeine</artifactId>
+      <version>3.1.8</version>
+      <scope>compile</scope>
+    </dependency>
+  </dependencies>
+
+  <!-- ======================================================================
+       Profiles
+       Build with:  mvn package -Pspark-3   (Spark 3.5 / Scala 2.12)
+                    mvn package -Pspark-4   (Spark 4.0 / Scala 2.13) [default]
+       ====================================================================== -->
+  <profiles>
+
+    <!-- spark-3: Spark 3.5.x / Scala 2.12
+         gRPC is a first-class dep (io.grpc.*), NOT shaded.
+         All Spark deps resolved from Maven Central (no system scope). -->
+    <profile>
+      <id>spark-3</id>
+      <properties>
+        <scala.version>2.12.18</scala.version>
+        <scala.binary.version>2.12</scala.binary.version>
+        <spark.version>3.5.3</spark.version>
+        <spark.compat.version>spark-3</spark.compat.version>
+        <jackson.version>2.15.2</jackson.version>
+      </properties>
+
+      <dependencies>
+        <dependency>
+          <groupId>org.apache.spark</groupId>
+          <artifactId>spark-connect_${scala.binary.version}</artifactId>
+          <version>${spark.version}</version>
+          <scope>provided</scope>
+        </dependency>
+        <dependency>
+          <groupId>org.apache.spark</groupId>
+          <artifactId>spark-sql_${scala.binary.version}</artifactId>
+          <version>${spark.version}</version>
+          <scope>provided</scope>
+        </dependency>
+        <dependency>
+          <groupId>org.apache.spark</groupId>
+          <artifactId>spark-catalyst_${scala.binary.version}</artifactId>
+          <version>${spark.version}</version>
+          <scope>provided</scope>
+        </dependency>
+        <dependency>
+          <groupId>org.apache.spark</groupId>
+          <artifactId>spark-core_${scala.binary.version}</artifactId>
+          <version>${spark.version}</version>
+          <scope>provided</scope>
+        </dependency>
+        <!--
+          In Spark 3.5, gRPC is NOT shaded — it is a regular dependency
+          available as io.grpc.* at runtime.
+        -->
+        <dependency>
+          <groupId>io.grpc</groupId>
+          <artifactId>grpc-api</artifactId>
+          <version>1.56.1</version>
+          <scope>provided</scope>
+        </dependency>
+        <!-- hadoop-common — provides org.apache.hadoop.conf.Configuration -->
+        <dependency>
+          <groupId>org.apache.hadoop</groupId>
+          <artifactId>hadoop-common</artifactId>
+          <version>3.3.4</version>
+          <scope>provided</scope>
+        </dependency>
+        <!--
+          aws-sdk-v2 auth — provides AwsCredentialsProvider / AwsBasicCredentials
+          used by JwtAWSCredentialsProvider (compile-time only for spark-3).
+        -->
+        <dependency>
+          <groupId>software.amazon.awssdk</groupId>
+          <artifactId>auth</artifactId>
+          <version>2.29.26</version>
+          <scope>provided</scope>
+        </dependency>
+      </dependencies>
+    </profile>
+
+    <!--
+      spark-4: Spark 4.0.x / Scala 2.13 [default]
+        - gRPC is shaded inside spark-connect as
+          org.sparkproject.connect.grpc.*
+        - Spark JARs referenced via system scope from the devcontainer
+          (/opt/spark/jars) so we compile against the shaded classes.
+    -->
+    <profile>
+      <id>spark-4</id>
+      <activation>
+        <activeByDefault>true</activeByDefault>
+      </activation>
+
+      <dependencies>
+        <!--
+          spark-connect — provides the shaded gRPC classes at
+          org.sparkproject.connect.grpc.* used by JwtExtractInterceptor.
+        -->
+        <dependency>
+          <groupId>org.apache.spark</groupId>
+          <artifactId>spark-connect_${scala.binary.version}</artifactId>
+          <version>${spark.version}</version>
+          <scope>system</scope>
+          <systemPath>/opt/spark/jars/spark-connect_2.13-4.0.1.jar</systemPath>
+        </dependency>
+        <dependency>
+          <groupId>org.apache.spark</groupId>
+          <artifactId>spark-sql_${scala.binary.version}</artifactId>
+          <version>${spark.version}</version>
+          <scope>system</scope>
+          <systemPath>/opt/spark/jars/spark-sql_2.13-4.0.1.jar</systemPath>
+        </dependency>
+        <!--
+          spark-sql-api — new in Spark 4.x. Contains the abstract SparkSession
+          base class (org.apache.spark.sql.SparkSession).
+        -->
+        <dependency>
+          <groupId>org.apache.spark</groupId>
+          <artifactId>spark-sql-api_${scala.binary.version}</artifactId>
+          <version>${spark.version}</version>
+          <scope>system</scope>
+          <systemPath>/opt/spark/jars/spark-sql-api_2.13-4.0.1.jar</systemPath>
+        </dependency>
+        <dependency>
+          <groupId>org.apache.spark</groupId>
+          <artifactId>spark-catalyst_${scala.binary.version}</artifactId>
+          <version>${spark.version}</version>
+          <scope>system</scope>
+          <systemPath>/opt/spark/jars/spark-catalyst_2.13-4.0.1.jar</systemPath>
+        </dependency>
+        <dependency>
+          <groupId>org.apache.spark</groupId>
+          <artifactId>spark-core_${scala.binary.version}</artifactId>
+          <version>${spark.version}</version>
+          <scope>system</scope>
+          <systemPath>/opt/spark/jars/spark-core_2.13-4.0.1.jar</systemPath>
+        </dependency>
+        <!--
+          spark-common-utils — new in Spark 4.x; provides
+          org.apache.spark.internal.Logging mixed into Rule[T] and our classes.
+        -->
+        <dependency>
+          <groupId>org.apache.spark</groupId>
+          <artifactId>spark-common-utils_${scala.binary.version}</artifactId>
+          <version>${spark.version}</version>
+          <scope>system</scope>
+          <systemPath>/opt/spark/jars/spark-common-utils_2.13-4.0.1.jar</systemPath>
+        </dependency>
+        <!-- slf4j-api — transitively required by spark-common-utils -->
+        <dependency>
+          <groupId>org.slf4j</groupId>
+          <artifactId>slf4j-api</artifactId>
+          <version>2.0.16</version>
+          <scope>system</scope>
+          <systemPath>/opt/spark/jars/slf4j-api-2.0.16.jar</systemPath>
+        </dependency>
+        <!--
+          hadoop-client-api — provides org.apache.hadoop.conf.Configuration,
+          required by CredentialInjectionRule (sc.hadoopConfiguration).
+        -->
+        <dependency>
+          <groupId>org.apache.hadoop</groupId>
+          <artifactId>hadoop-client-api</artifactId>
+          <version>3.4.1</version>
+          <scope>system</scope>
+          <systemPath>/opt/spark/jars/hadoop-client-api-3.4.1.jar</systemPath>
+        </dependency>
+        <!--
+          aws-sdk-v2-bundle — provides AwsCredentialsProvider / AwsBasicCredentials
+          used by JwtAWSCredentialsProvider.  Hadoop 3.4 S3A uses AWS SDK v2.
+        -->
+        <dependency>
+          <groupId>software.amazon.awssdk</groupId>
+          <artifactId>bundle</artifactId>
+          <version>2.38.2</version>
+          <scope>system</scope>
+          <systemPath>/opt/spark/jars/aws-sdk-v2-bundle-2.38.2.jar</systemPath>
+        </dependency>
+      </dependencies>
+    </profile>
+
+  </profiles>
+
+  <!-- ======================================================================
+       Build
+       ====================================================================== -->
+  <build>
+    <!-- Shared sources: AuthServiceClient, CredentialInjectionExtension -->
+    <sourceDirectory>src/main/scala</sourceDirectory>
+    <testSourceDirectory>src/test/scala</testSourceDirectory>
+
+    <plugins>
+      <!--
+        Add the version-specific source directory (scala-spark-3 or scala-spark-4)
+        alongside the shared src/main/scala directory.
+        ${spark.compat.version} is set by the active profile.
+      -->
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>build-helper-maven-plugin</artifactId>
+        <version>3.6.0</version>
+        <executions>
+          <execution>
+            <id>add-version-specific-source</id>
+            <phase>generate-sources</phase>
+            <goals>
+              <goal>add-source</goal>
+            </goals>
+            <configuration>
+              <sources>
+                <source>src/main/scala-${spark.compat.version}</source>
+              </sources>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+
+      <!-- Compile Scala sources -->
+      <plugin>
+        <groupId>net.alchim31.maven</groupId>
+        <artifactId>scala-maven-plugin</artifactId>
+        <version>4.9.2</version>
+        <executions>
+          <execution>
+            <goals>
+              <goal>compile</goal>
+              <goal>testCompile</goal>
+            </goals>
+          </execution>
+        </executions>
+        <configuration>
+          <scalaVersion>${scala.version}</scalaVersion>
+          <args>
+            <arg>-deprecation</arg>
+            <arg>-feature</arg>
+          </args>
+        </configuration>
+      </plugin>
+
+      <!--
+        Produce a self-contained plugin JAR.
+        Output file includes the Spark compat version so both builds can
+        coexist:
+          spark-connect-jwt-auth-1.0.0-SNAPSHOT-spark-3-plugin.jar
+          spark-connect-jwt-auth-1.0.0-SNAPSHOT-spark-4-plugin.jar
+      -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-shade-plugin</artifactId>
+        <version>3.5.3</version>
+        <executions>
+          <execution>
+            <phase>package</phase>
+            <goals>
+              <goal>shade</goal>
+            </goals>
+            <configuration>
+              <outputFile>
+                ${project.build.directory}/${project.artifactId}-${project.version}-${spark.compat.version}-plugin.jar</outputFile>
+              <filters>
+                <filter>
+                  <artifact>*:*</artifact>
+                  <excludes>
+                    <exclude>META-INF/*.SF</exclude>
+                    <exclude>META-INF/*.DSA</exclude>
+                    <exclude>META-INF/*.RSA</exclude>
+                  </excludes>
+                </filter>
+              </filters>
+              <relocations>
+                <!-- Relocate Caffeine to avoid conflicts with any version
+                     Spark itself may bundle or load in a future release. -->
+                <relocation>
+                  <pattern>com.github.benmanes.caffeine</pattern>
+                  <shadedPattern>com.yourco.spark.auth.shaded.caffeine</shadedPattern>
+                </relocation>
+              </relocations>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+
+      <!-- Run ScalaTest via Surefire -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <version>3.2.5</version>
+        <configuration>
+          <includes>
+            <include>**/*Spec.class</include>
+            <include>**/*Test.class</include>
+            <include>**/*Suite.class</include>
+          </includes>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>

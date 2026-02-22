@@ -1,0 +1,63 @@
+services:
+  bucket-init:
+    image: busybox
+    volumes:
+      - s3data:/data
+    command: ["/bin/sh", "-c", "mkdir -p /data/poc-data && echo 'bucket ready'"]
+
+  s3proxy:
+    build:
+      context: s3proxy
+      dockerfile: Dockerfile
+    depends_on:
+      bucket-init:
+        condition: service_completed_successfully
+    ports:
+      - "9090:8080"
+    volumes:
+      - s3data:/data
+    environment:
+      S3PROXY_AUTHORIZATION: aws-v2-or-v4
+      S3PROXY_IDENTITY: test-access-key-id
+      S3PROXY_CREDENTIAL: test-secret-access-key
+      S3PROXY_ENDPOINT: "http://0.0.0.0:8080"
+      JCLOUDS_PROVIDER: filesystem
+      JCLOUDS_FILESYSTEM_BASEDIR: /data
+      OVERTURE_RELEASE: "2026-02-18.0"
+      OVERTURE_THEME: base
+      OVERTURE_TYPE: infrastructure
+      LOG_LEVEL: "debug"
+
+  # ---------------------------------------------------------------------------
+  # Inspector: one-shot busybox container for browsing the s3data volume.
+  # Usage (from host):
+  #   docker compose -f docker-compose.s3proxy.yml run --rm inspector sh
+  # Then inside the shell:
+  #   ls /data/poc-data/
+  #   find /data -name "*.parquet"
+  # ---------------------------------------------------------------------------
+  inspector:
+    image: busybox
+    profiles: ["inspect"]          # not started by default; use --profile inspect
+    volumes:
+      - s3data:/data
+    entrypoint: ["/bin/sh"]
+
+volumes:
+  s3data:
+
+# ---------------------------------------------------------------------------
+# Spark S3A configuration to point at this proxy
+# ---------------------------------------------------------------------------
+# Add these to your spark-submit / CredentialInjectionRule / AuthServiceClient:
+#
+#   spark.hadoop.fs.s3a.endpoint          = http://host.docker.internal:9090
+#   spark.hadoop.fs.s3a.path.style.access = true
+#   spark.hadoop.fs.s3a.access.key        = test-access-key-id
+#   spark.hadoop.fs.s3a.secret.key        = test-secret-access-key
+#   spark.hadoop.fs.s3a.aws.credentials.provider
+#       = org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider
+#
+# To inspect bucket contents:
+#   docker compose -f docker-compose.s3proxy.yml run --rm inspector sh
+# ---------------------------------------------------------------------------

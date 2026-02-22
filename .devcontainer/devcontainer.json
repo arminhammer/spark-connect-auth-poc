@@ -1,0 +1,48 @@
+{
+    "name": "Spark Extension Dev (Sedona 1.8.1)",
+    "build": {
+        "dockerfile": "Dockerfile",
+        "context": ".."
+    },
+    // Required on SELinux systems (Fedora/RHEL) to allow bind-mounting the workspace
+    "runArgs": ["--security-opt", "label=disable"],
+    // Expose Spark UIs for testing during development
+    "forwardPorts": [4040, 8080, 8081],
+    "portsAttributes": {
+        "4040": { "label": "Spark Application UI" },
+        "8080": { "label": "Spark Master UI" },
+        "8081": { "label": "Spark Worker UI" }
+    },
+    // Create the venv and install dependencies from pyproject.toml on first container create
+    "postCreateCommand": "uv sync",
+    "remoteEnv": {
+        // Pass through Spark and Java env vars already set in the Sedona image
+        "SPARK_HOME": "${containerEnv:SPARK_HOME}",
+        "JAVA_HOME": "${containerEnv:JAVA_HOME}",
+        // Prepend the uv-managed venv so every terminal uses the project Python
+        "PATH": "${containerWorkspaceFolder}/.venv/bin:${containerEnv:SPARK_HOME}/bin:${containerEnv:JAVA_HOME}/bin:${containerEnv:PATH}",
+        "VIRTUAL_ENV": "${containerWorkspaceFolder}/.venv"
+    },
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                // Claude Code
+                "anthropic.claude-code",
+                // Java development
+                "vscjava.vscode-java-pack",
+                // Scala / sbt (Metals language server)
+                "scalameta.metals",
+                // XML editing (pom.xml, etc.)
+                "redhat.vscode-xml"
+            ],
+            "settings": {
+                "java.configuration.updateBuildConfiguration": "automatic",
+                "metals.sbtScript": "/usr/local/bin/sbt",
+                "editor.formatOnSave": true
+            }
+        }
+    },
+    // Run as root so the dev user can install packages and write anywhere in
+    // the image (Sedona's JupyterLab base image runs as jovyan by default).
+    "remoteUser": "root"
+}
