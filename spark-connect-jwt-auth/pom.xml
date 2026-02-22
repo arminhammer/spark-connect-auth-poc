@@ -127,13 +127,15 @@
           <scope>provided</scope>
         </dependency>
         <!--
-          aws-sdk-v2 auth — provides AwsCredentialsProvider / AwsBasicCredentials
-          used by JwtAWSCredentialsProvider (compile-time only for spark-3).
+          aws-java-sdk-core — provides AWSCredentialsProvider / BasicAWSCredentials /
+          BasicSessionCredentials used by the Spark-3 JwtAWSCredentialsProvider.
+          Hadoop 3.3.x S3A uses AWS SDK v1 (AWSCredentialsProvider interface).
+          The SDK v2 migration happened in Hadoop 3.4.0 (bundled with Spark 4).
         -->
         <dependency>
-          <groupId>software.amazon.awssdk</groupId>
-          <artifactId>auth</artifactId>
-          <version>2.29.26</version>
+          <groupId>com.amazonaws</groupId>
+          <artifactId>aws-java-sdk-core</artifactId>
+          <version>1.12.262</version>
           <scope>provided</scope>
         </dependency>
       </dependencies>

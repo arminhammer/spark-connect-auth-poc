@@ -69,7 +69,7 @@ S3A writes Parquet to s3proxy (or real AWS in production)
 │  ┌──────────────▼───────────────────────────────────┐              │
 │  │ CredentialInjectionRule  (per-session instance)  │              │
 │  │  • reads JWT from CURRENT_JWT                    │              │
-│  │  • session.conf.set("spark.connect.auth.jwt", …) │              │
+│  │  • session.conf.set("spark.hadoop.connect.auth.jwt", …) │              │
 │  │  • one-time: writes S3A config to sc.hadoopConf  │              │
 │  │    (endpoint, path style — no secrets)           │              │
 │  └──────────────┬───────────────────────────────────┘              │
@@ -82,7 +82,7 @@ S3A writes Parquet to s3proxy (or real AWS in production)
 │                 │ broadcast to executors                            │
 │  ┌──────────────▼───────────────────────────────────┐              │
 │  │ JwtAWSCredentialsProvider(conf)                  │              │
-│  │  • conf.get("spark.connect.auth.jwt") → JWT      │              │
+│  │  • conf.get("spark.hadoop.connect.auth.jwt") → JWT  │              │
 │  │  • calls auth-service POST /v1/credentials/sts   │              │
 │  │  • Caffeine cache: evicts at JWT exp - 60s       │              │
 │  │  • returns AwsBasicCredentials per user          │              │
@@ -114,13 +114,16 @@ spark-connect-auth/
 │       ├── AuthServiceClient.scala          # HTTP client: JWT → StsCredentials
 │       ├── CredentialInjectionExtension.scala  # SparkSessionExtensions entry point
 │       │                                        # + CredentialInjectionRule
-│       └── JwtAWSCredentialsProvider.scala  # S3A AwsCredentialsProvider (Caffeine cache)
+│       └── JwtCredentialCache.scala         # JWT_KEY constant + Caffeine cache
+│                                            # (shared across Spark 3 and Spark 4)
 │
 │   └── src/main/scala-spark-4/com/yourco/spark/auth/
-│       └── JwtExtractInterceptor.scala      # gRPC interceptor (shaded grpc imports)
+│       ├── JwtExtractInterceptor.scala      # gRPC interceptor (shaded grpc imports)
+│       └── JwtAWSCredentialsProvider.scala  # S3A AwsCredentialsProvider (SDK v2)
 │
 │   └── src/main/scala-spark-3/com/yourco/spark/auth/
-│       └── JwtExtractInterceptor.scala      # Same, unshaded io.grpc.* imports
+│       ├── JwtExtractInterceptor.scala      # gRPC interceptor (unshaded io.grpc.*)
+│       └── JwtAWSCredentialsProvider.scala  # S3A AWSCredentialsProvider (SDK v1)
 │
 └── s3proxy/
     ├── Dockerfile
@@ -146,7 +149,7 @@ With concurrent sessions, the last `set()` call wins. UserA's tasks may silently
 
 ```scala
 // ✅ SAFE — session.conf is per-SparkSession (per-client-connection)
-session.conf.set("spark.connect.auth.jwt", jwt)
+session.conf.set("spark.hadoop.connect.auth.jwt", jwt)
 ```
 
 `SessionState.newHadoopConf()` (bytecode-verified from `spark-sql_2.13-4.0.1.jar`) builds a fresh `Configuration` per query by:
@@ -433,14 +436,29 @@ Plain HTTP client that calls the auth service. URL resolved from (in priority or
 2. Environment variable `AUTH_SERVICE_URL`
 3. Default `http://localhost:8081`
 
-### `JwtAWSCredentialsProvider`
+### `JwtCredentialCache` (shared constants and credential cache)
 
-S3A `AwsCredentialsProvider` that resolves credentials on demand:
+Lives in `src/main/scala/` alongside the other shared sources. Named separately from `JwtAWSCredentialsProvider` because Scala requires a class and its companion object to reside in the same file — here the class is in a version-specific directory while the shared state must live in the common tree.
 
-1. Reads the JWT from `this.conf` (the `Configuration` passed by S3A at construction time — populated from the per-session SQLConf via `newHadoopConf()`).
-2. Looks up credentials in a **Caffeine cache** keyed by the raw JWT string.
-3. On cache miss: calls `AuthServiceClient.exchangeJwtForSts(jwt)` and caches the result.
-4. Cache TTL: `max(0, JWT exp - now - 60s)` — entries are evicted 60 seconds before the JWT expires, ensuring credentials are always refreshed before the auth service would reject the JWT.
+Contains:
+- `JWT_KEY = "spark.hadoop.connect.auth.jwt"` — written to `session.conf` by `CredentialInjectionRule`. The `spark.hadoop.` prefix is load-bearing: Spark 3.5's `newHadoopConf()` only copies `spark.hadoop.*` keys and strips the prefix (the JWT arrives as `connect.auth.jwt` in the task conf); Spark 4.0's `newHadoopConf()` copies all keys verbatim (the JWT arrives as `spark.hadoop.connect.auth.jwt`).
+- `JWT_CONF_KEY = "connect.auth.jwt"` — the stripped form used by the Spark 3 class.
+- The Caffeine cache (per-JWT TTL from `exp` claim, 60-second eviction buffer).
+
+### `JwtAWSCredentialsProvider` (version-specific)
+
+Two implementations in the version-specific source directories:
+
+| Directory | Interface | AWS SDK |
+|---|---|---|
+| `scala-spark-4/` | `software.amazon.awssdk.auth.credentials.AwsCredentialsProvider` (`resolveCredentials()`) | SDK v2 |
+| `scala-spark-3/` | `com.amazonaws.auth.AWSCredentialsProvider` (`getCredentials()` / `refresh()`) | SDK v1 |
+
+Both variants:
+1. Read the JWT from `this.conf` using the appropriate key (`JWT_KEY` in Spark 4, `JWT_CONF_KEY` in Spark 3).
+2. Look up credentials in `JwtCredentialCache.cache` keyed by the raw JWT string.
+3. On cache miss: call `AuthServiceClient.exchangeJwtForSts(jwt)` and cache the result.
+4. Return `AwsBasicCredentials` / `BasicAWSCredentials`. The STS `sessionToken` field is intentionally not passed to the credential object in the PoC — s3proxy does not implement the `x-amz-security-token` header and returns 501 if it is included. When pointing at real AWS, switch to `AwsSessionCredentials` / `BasicSessionCredentials`.
 
 ---
 
@@ -463,7 +481,7 @@ The following items are intentionally simplified for the PoC and should be addre
 
 1. **Real IdP** — Replace `jwt-public-key.pem` / `create-jwt-token.py` with a proper OIDC provider (Dex, Okta, Azure AD). Fetch the public key from the IdP's JWKS endpoint and rotate it automatically.
 
-2. **Real auth service** — `auth-service.py` returns hard-coded credentials. Replace with a service that calls `sts:AssumeRole` with a role ARN scoped to the user's data access policy.
+2. **Real auth service** — `auth-service.py` returns hard-coded credentials. Replace with a service that calls `sts:AssumeRole` with a role ARN scoped to the user's data access policy. When using real STS credentials, switch `JwtAWSCredentialsProvider` to return `AwsSessionCredentials` (SDK v2) / `BasicSessionCredentials` (SDK v1) instead of the basic form — s3proxy does not implement the `x-amz-security-token` header and returns 501 if the session token is sent.
 
 3. **Multi-key JWT validation** — `JwtAuth.validateToken` loads a single public key. A production implementation should support a JWKS key set and rotate keys without a server restart.
 

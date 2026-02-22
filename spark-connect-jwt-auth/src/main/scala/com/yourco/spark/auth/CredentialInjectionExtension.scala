@@ -52,7 +52,7 @@ class CredentialInjectionRule(session: SparkSession) extends Rule[LogicalPlan] {
       //    Called on EVERY plan: each query may run on a different
       //    ExecutionThread from the pool and must re-populate the conf each time.
       // -----------------------------------------------------------------------
-      session.conf.set(JwtAWSCredentialsProvider.JWT_KEY, jwt)
+      session.conf.set(JwtCredentialCache.JWT_KEY, jwt)
       logDebug(
         s"[CredentialInjectionRule] JWT written to session.conf for " +
           s"session=$sessionId (jwt prefix=${jwt.take(8)}...)"
@@ -122,7 +122,7 @@ class CredentialInjectionRule(session: SparkSession) extends Rule[LogicalPlan] {
     } else {
       // No JWT on this thread.  Unset the session.conf key so that a reused
       // session on a different ExecutionThread cannot carry a stale JWT.
-      try { session.conf.unset(JwtAWSCredentialsProvider.JWT_KEY) } catch { case _: Exception => () }
+      try { session.conf.unset(JwtCredentialCache.JWT_KEY) } catch { case _: Exception => () }
       logDebug(
         s"[CredentialInjectionRule] No JWT in CURRENT_JWT for session=$sessionId — " +
           s"JWT cleared from session.conf"
@@ -141,6 +141,7 @@ class CredentialInjectionRule(session: SparkSession) extends Rule[LogicalPlan] {
     lower.contains(".access.key") ||
     lower.contains(".secret.key") ||
     lower.contains(".session.token") ||
-    lower.contains(".credentials.provider")
+    lower.contains(".credentials.provider") ||
+    lower.contains("connect.auth.jwt") // JWT must never be written to sc.hadoopConfiguration
   }
 }
